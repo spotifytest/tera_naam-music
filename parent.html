@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parent Tracking & Driver Logs</title>
+  
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { padding: 15px; background-color: #f4f6f9; }
+    
+    .header { background: #ffffff; padding: 16px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
+    .header-info h2 { font-size: 18px; color: #1a1a1a; }
+    .header-info p { font-size: 13px; color: #666; }
+    
+    .status-badge { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #eee; border-radius: 20px; font-size: 12px; font-weight: 600; color: #555; }
+    .status-dot { width: 8px; height: 8px; background-color: #aaa; border-radius: 50%; }
+    .status-badge.active { background: #e8f8ed; color: #117a37; }
+    .status-badge.active .status-dot { background-color: #1db954; }
+
+    .main-layout { display: grid; grid-template-columns: 1fr 340px; gap: 15px; }
+    @media (max-width: 850px) { .main-layout { grid-template-columns: 1fr; } }
+
+    #map { height: calc(100vh - 120px); width: 100%; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+
+    /* Log Panel */
+    .log-panel { background: #fff; padding: 16px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); height: calc(100vh - 120px); overflow-y: auto; }
+    .log-panel h3 { font-size: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+    .clear-btn { background: none; border: none; color: #ff4d4d; cursor: pointer; font-size: 12px; font-weight: 600; }
+    
+    .log-item { padding: 12px; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+    .log-item:first-child { background: #f9fbfd; border-radius: 8px; }
+    .log-action { font-weight: bold; margin-bottom: 4px; }
+    .log-action.start { color: #1db954; }
+    .log-action.stop { color: #e50914; }
+    .log-time { color: #888; font-size: 11px; margin-bottom: 4px; }
+    .log-address { color: #444; word-break: break-word; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-info">
+      <h2>🚌 School Bus Tracking</h2>
+      <p id="timeText">Waiting for driver...</p>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <div class="status-dot"></div>
+      <span id="statusLabel">DISCONNECTED</span>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <div id="map"></div>
+
+    <!-- Driver Activity Logs -->
+    <div class="log-panel">
+      <h3>
+        Driver Activity Logs 
+        <button class="clear-btn" onclick="clearLogs()">Clear</button>
+      </h3>
+      <div id="logList">
+        <p style="color:#aaa; font-size: 12px;">No activity recorded yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    const TOPIC = "school_system_bus_tracking_demo_9921";
+    let map = L.map('map').setView([20.5937, 78.9629], 5);
+    let busMarker = null;
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+
+    const busIcon = L.icon({
+      iconUrl: 'https://cdn-icons-png.flaticon.com/512/3448/3448339.png',
+      iconSize: [42, 42],
+      iconAnchor: [21, 21]
+    });
+
+    const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+
+    // Load saved logs from LocalStorage on load
+    let logsArray = JSON.parse(localStorage.getItem("driver_logs") || "[]");
+    renderLogs();
+
+    client.on('connect', () => {
+      document.getElementById("statusLabel").innerText = "CONNECTED";
+      client.subscribe(TOPIC);
+    });
+
+    client.on('message', (topic, message) => {
+      const data = JSON.parse(message.toString());
+
+      // 1. Continuous Live Map Updates
+      if (data.type === "GPS_PING" || data.latitude) {
+        const coords = [data.latitude, data.longitude];
+        const timeString = new Date(data.timestamp).toLocaleTimeString();
+
+        document.getElementById("statusBadge").classList.add("active");
+        document.getElementById("statusLabel").innerText = "DRIVER LIVE";
+        document.getElementById("timeText").innerText = "Last updated: " + timeString;
+
+        if (!busMarker) {
+          busMarker = L.marker(coords, { icon: busIcon }).addTo(map).bindPopup("<b>School Bus</b>").openPopup();
+          map.setView(coords, 16);
+        } else {
+          busMarker.setLatLng(coords);
+          map.panTo(coords);
+        }
+      }
+
+      // 2. Driver Click Log Event Handlers
+      if (data.type === "DRIVER_CLICK") {
+        saveLog(data);
+      }
+    });
+
+    function saveLog(eventData) {
+      logsArray.unshift(eventData); // Save latest to top
+      localStorage.setItem("driver_logs", JSON.stringify(logsArray)); // JSON Storage
+      renderLogs();
+    }
+
+    function renderLogs() {
+      const logList = document.getElementById("logList");
+      if (logsArray.length === 0) {
+        logList.innerHTML = '<p style="color:#aaa; font-size: 12px;">No activity recorded yet.</p>';
+        return;
+      }
+
+      logList.innerHTML = logsArray.map(item => `
+        <div class="log-item">
+          <div class="log-action ${item.action === 'START_TRIP' ? 'start' : 'stop'}">
+            ${item.action === 'START_TRIP' ? '▶ Trip Started' : '⏹ Trip Stopped'}
+          </div>
+          <div class="log-time">${new Date(item.timestamp).toLocaleString()}</div>
+          <div class="log-address">📍 ${item.address || 'Location unavailable'}</div>
+        </div>
+      `).join('');
+    }
+
+    function clearLogs() {
+      logsArray = [];
+      localStorage.removeItem("driver_logs");
+      renderLogs();
+    }
+  </script>
+</body>
+</html>
